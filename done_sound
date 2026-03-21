@@ -1,0 +1,15 @@
+"Stop": [                                                                                                                  {                                                                                                                          "hooks": [                                                                                                         
+      {
+        "type": "command",
+        "command": "sleep 0.5 && powershell.exe -Command \"(New-Object Media.SoundPlayer                               
+'C:\\Windows\\Media\\chimes.wav').PlaySync()\""                                                                                }                                                                                                                
+    ]                                                                                                                  
+  }
+],
+"Notification": [
+  {                                                                                                                          "hooks": [
+      {                                                                                                                          "type": "command",
+        "command": "powershell.exe -Command \"(New-Object Media.SoundPlayer                                            
+'C:\\Windows\\Media\\chimes.wav').PlaySync()\""                                                                                }
+    ]                                                                                                                  
+  }                                                                                                                      ]
