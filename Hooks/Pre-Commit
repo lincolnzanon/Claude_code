@@ -7,6 +7,11 @@
 #   SKIP_LINT=1              (skips lint only)
 #   SKIP_TESTS=1             (skips tests only)
 #
+# Per-repo override (first match wins, replaces global checks):
+#   git config hooks.disableGlobal true       -> skip global, exit 0
+#   .git/hooks/pre-commit.local (executable)  -> exec it instead of global
+#   .githooks/pre-commit (executable)         -> exec it instead of global
+#
 # Designed to be installed globally via:
 #   git config --global core.hooksPath <dir-containing-this-file>
 
@@ -36,6 +41,19 @@ if [ -f "$GIT_DIR/CHERRY_PICK_HEAD" ];  then info "cherry-pick in progress, skip
 if [ -d "$GIT_DIR/rebase-merge" ] || [ -d "$GIT_DIR/rebase-apply" ]; then
     info "rebase in progress, skipping"; exit 0
 fi
+
+# ---------- Per-repo override (first match wins, replaces global checks) ----------
+if [ "$(git config --get hooks.disableGlobal 2>/dev/null || true)" = "true" ]; then
+    info "hooks.disableGlobal=true, skipping global checks"
+    exit 0
+fi
+for _candidate in "$REPO_ROOT/.git/hooks/pre-commit.local" "$REPO_ROOT/.githooks/pre-commit"; do
+    if [ -x "$_candidate" ]; then
+        info "delegating to per-repo hook: $_candidate"
+        exec "$_candidate" "$@"
+    fi
+done
+unset _candidate
 
 # ---------- Detect initial commit (no HEAD yet) ----------
 if git rev-parse --verify HEAD >/dev/null 2>&1; then HAS_HEAD=1; else HAS_HEAD=0; fi
