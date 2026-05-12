@@ -1,8 +1,8 @@
-Create new issues for the above with detailed descriptions adhering to the below. Read the summary of currently pending issues first and make sure the issues you are adding doesnt relate to the pending issues (if it does please append anything new relating to that issue using Update issue body and github CLI)
+Create new issues for the above with detailed descriptions adhering to the below. First, review previous issue names and current pending issues; if the new issue overlaps, update the existing issue body via GitHub CLI instead of creating a duplicate.
 
 
 Title:
-Start with a conventional prefix such as bug, feat, refactor, or tech debt, followed by a short, specific scope: e.g., bug(auth): session expiration not handled correctly.
+Use: `[###] 1-3-word-change-label` (example: `[127] auth-session-fix`); before creating, review previous issue names and reuse/update if similar. Also in the title assign priority: onle one of: `P0` (critical), `P1` (high), `P2` (medium), or `P3` (low).
 
 
 Body:
