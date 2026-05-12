@@ -1,0 +1,187 @@
+#!/usr/bin/env bash
+# begin-session — create an isolated git worktree for a GitHub issue, seed PLAN.md,
+# and (by default) exec claude inside the new worktree.
+#
+# Canonical implementation. The /Begin_session Claude Code skill is a thin shim
+# that calls this script with --no-exec (since a running Claude session cannot
+# move its own cwd into the new worktree).
+#
+# Usage: begin-session [--no-exec] [ISSUE_NUMBER]
+#   --no-exec      Do setup, then print the manual "open a new terminal" command
+#                  instead of exec'ing claude. Used by the /Begin_session skill.
+#   ISSUE_NUMBER   GitHub issue to start. If omitted, the top 10 open issues
+#                  are listed by priority (P0 → P3) and you're prompted to pick.
+#
+# Must be run from inside a git checkout. Auto-detects gh vs gh.exe (WSL).
+
+set -euo pipefail
+
+NO_EXEC=false
+ISSUE_ARG=""
+
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --no-exec) NO_EXEC=true; shift ;;
+    -h|--help)
+      sed -n '2,15p' "$0" | sed 's/^# \{0,1\}//'
+      exit 0
+      ;;
+    -*) echo "Unknown flag: $1" >&2; exit 2 ;;
+    *)
+      if [[ -n "$ISSUE_ARG" ]]; then
+        echo "Multiple issue numbers given; expected one." >&2
+        exit 2
+      fi
+      ISSUE_ARG="$1"; shift ;;
+  esac
+done
+
+# --- gh binary detection (WSL has gh.exe, not gh) ----------------------------
+if command -v gh >/dev/null 2>&1; then
+  GH=gh
+elif command -v gh.exe >/dev/null 2>&1; then
+  GH=gh.exe
+else
+  echo "gh CLI not found (tried 'gh' and 'gh.exe'). Install from https://cli.github.com/" >&2
+  exit 1
+fi
+
+# --- Preflight ---------------------------------------------------------------
+if ! git rev-parse --show-toplevel >/dev/null 2>&1; then
+  echo "Not in a git repo. cd to your project checkout first." >&2
+  exit 1
+fi
+if ! "$GH" auth status >/dev/null 2>&1; then
+  echo "$GH is not authenticated. Run: $GH auth login" >&2
+  exit 1
+fi
+
+REPO_ROOT="$(git rev-parse --show-toplevel)"
+cd "$REPO_ROOT"
+
+# --- Resolve issue number ----------------------------------------------------
+if [[ -z "$ISSUE_ARG" ]]; then
+  echo "Top open issues (ranked P0 → P3):"
+  echo
+  "$GH" issue list \
+    --state open \
+    --limit 50 \
+    --json number,title,labels \
+    --jq '
+      map(. + {priority: ([.labels[].name | select(test("^P[0-3]$"))] | sort | first // "P9")})
+      | sort_by(.priority, .number)
+      | .[:10]
+      | .[] | "\(.priority)  #\(.number)  \(.title)"
+    '
+  echo
+  read -r -p "Pick an issue number: " ISSUE_ARG
+fi
+
+ISSUE_NUM="${ISSUE_ARG#\#}"
+if [[ ! "$ISSUE_NUM" =~ ^[0-9]+$ ]]; then
+  echo "Issue number must be digits, got: '$ISSUE_NUM'" >&2
+  exit 1
+fi
+
+# --- Fetch issue details (single call, parsed three ways) -------------------
+ISSUE_JSON="$("$GH" issue view "$ISSUE_NUM" --json title,url,body)"
+ISSUE_TITLE="$("$GH" issue view "$ISSUE_NUM" --json title --jq .title)"
+ISSUE_URL="$("$GH" issue view "$ISSUE_NUM" --json url --jq .url)"
+ISSUE_BODY="$("$GH" issue view "$ISSUE_NUM" --json body --jq .body)"
+
+# --- Derive slug / branch / paths -------------------------------------------
+SLUG="$(printf '%s' "$ISSUE_TITLE" \
+  | tr '[:upper:]' '[:lower:]' \
+  | sed 's/[^a-z0-9]/-/g; s/--*/-/g; s/^-//; s/-$//' \
+  | cut -c1-40 \
+  | sed 's/-$//')"
+
+BRANCH="${ISSUE_NUM}-${SLUG}"
+WORKTREE_REL=".worktrees/${BRANCH}"
+WORKTREE_ABS="${REPO_ROOT}/${WORKTREE_REL}"
+
+# --- Default branch + fresh fetch -------------------------------------------
+DEFAULT_BRANCH="$("$GH" repo view --json defaultBranchRef --jq .defaultBranchRef.name)"
+git fetch origin "$DEFAULT_BRANCH" --quiet
+
+# --- Fail fast on conflicts --------------------------------------------------
+if git show-ref --verify --quiet "refs/heads/${BRANCH}"; then
+  echo "Branch '${BRANCH}' already exists. Delete it or pick a different issue." >&2
+  exit 1
+fi
+if [[ -e "$WORKTREE_ABS" ]]; then
+  echo "Worktree path '${WORKTREE_REL}' already exists. Remove it first." >&2
+  exit 1
+fi
+
+# --- Ensure .worktrees/ is gitignored ---------------------------------------
+GITIGNORE="${REPO_ROOT}/.gitignore"
+if [[ ! -f "$GITIGNORE" ]] || ! grep -qxF ".worktrees/" "$GITIGNORE"; then
+  printf '\n.worktrees/\n' >> "$GITIGNORE"
+fi
+
+# --- Create the worktree (quiet) --------------------------------------------
+git worktree add -q -b "$BRANCH" "$WORKTREE_ABS" "origin/${DEFAULT_BRANCH}"
+
+# --- Trim issue body: keep Summary + Suggested implementation + Files -------
+TRIMMED_BODY="$(BODY="$ISSUE_BODY" python3 - <<'PYEOF'
+import os, re
+body = os.environ["BODY"]
+keep = {"summary", "suggested implementation", "files expected to change"}
+out, current, buf = [], None, []
+
+def flush():
+    if current and current.lower() in keep:
+        out.append(f"## {current}\n\n" + "".join(buf).rstrip() + "\n")
+
+for line in body.splitlines(keepends=True):
+    m = re.match(r"^##\s+(.+?)\s*$", line)
+    if m:
+        flush()
+        current, buf = m.group(1), []
+    else:
+        buf.append(line)
+flush()
+print("\n".join(out).rstrip())
+PYEOF
+)"
+
+# --- Seed PLAN.md ------------------------------------------------------------
+cat > "${WORKTREE_ABS}/PLAN.md" <<EOF
+# Plan: #${ISSUE_NUM} — ${ISSUE_TITLE}
+
+**Issue:** ${ISSUE_URL}
+**Branch:** ${BRANCH}
+**Base:** origin/${DEFAULT_BRANCH}
+
+${TRIMMED_BODY}
+
+## Plan
+
+- [ ] (fill in steps)
+
+---
+
+Closes #${ISSUE_NUM}
+EOF
+
+# --- Final output ------------------------------------------------------------
+if $NO_EXEC; then
+  cat <<EOF
+
+Worktree ready.
+
+  Issue:   #${ISSUE_NUM} — ${ISSUE_TITLE}
+  Branch:  ${BRANCH}
+  Path:    ${WORKTREE_ABS}
+  Plan:    ${WORKTREE_ABS}/PLAN.md
+
+Open a new terminal and run:
+  cd "${WORKTREE_ABS}" && claude
+EOF
+else
+  cd "$WORKTREE_ABS"
+  echo "Worktree ready at: $WORKTREE_ABS"
+  echo "Launching claude…"
+  exec claude
+fi
