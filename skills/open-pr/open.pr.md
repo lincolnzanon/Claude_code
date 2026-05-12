@@ -14,10 +14,14 @@
   User asks to open a PR for the current branch. Assume the branch is already pushed and commits are   final — this skill does not commit, push, or create branches. If those steps haven't happened
   yet, run `/commit` and `git push` first.
   
+  ## Issue conventions
+
+  Issues should follow **`Issue_create`**: title includes the issue number as digits (e.g. `[127] auth-session-fix`), and priority uses exactly one GitHub label **`P0`**, **`P1`**, **`P2`**, or **`P3`**.
+
   ## Branch convention
 
-  Branch must match `^<digits>-<label>` (e.g. `127-auth-session-fix`). The leading number is the    
-  GitHub issue this session is resolving. The script will abort if:
+  Branch must match `^<digits>-<label>` (e.g. `127-auth-session-fix`). The leading digits are the
+  GitHub issue number this PR closes (same as in the issue title). The script will abort if:
 
   - branch doesn't match the convention
   - the issue doesn't exist on GitHub
@@ -28,9 +32,8 @@
 
   ## Steps
   
-  1. Read the issue for context:
-     gh issue view  --json title,body,labels
-  Where `<num>` comes from the leading digits of `git symbolic-ref --short HEAD`.
+  1. Read the issue for context. Set `ISSUE_NUM` to the leading digits of the current branch (same rule as `open-pr.sh`), then:
+     gh issue view "$ISSUE_NUM" --json title,body,labels
   
   2. Read commits and diff on the branch to understand what shipped:
      git log --no-merges ..HEAD --format='%h %s%n%b'

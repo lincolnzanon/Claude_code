@@ -12,6 +12,13 @@ Start a focused work session for a single GitHub issue. Creates an isolated git 
 
 If empty, the skill will list the top open issues ranked by priority labels and ask the user to pick one.
 
+## Issue conventions (aligned with `/Issue_create`)
+
+Issues created for this workflow should match **`Issue_create`**:
+
+- **Title:** Include the GitHub issue number as digits in the title (e.g. `[42] auth-session-fix`) so it stays searchable and matches branch slugs derived from `gh issue view`.
+- **Priority:** Exactly one label named **`P0`**, **`P1`**, **`P2`**, or **`P3`** — those exact strings — so the empty-argument issue list below can rank work correctly.
+
 ## Process
 
 ### 1. Preflight
