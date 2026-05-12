@@ -1,1 +1,1 @@
-The issue outlined above has come up when coding, what could I fix in my skills, rules, workflows etc to ensure similar issues do not come up again in the future/
+The issue outlined above has come up when coding, what could I fix in my skills, rules, workflows etc to ensure similar issues do not come up again in the future? Ensure you also consider ways to save on tokens during a workflow similar to the above as well as things to add to the allowlist so I as the user do not need to approve everything when a similar workflow comes up again.
