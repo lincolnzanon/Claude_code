@@ -1,4 +1,16 @@
-Create new issues for the above with detailed descriptions adhering to the below. First, review previous issue names and current pending issues; if the new issue overlaps, update the existing issue body via GitHub CLI instead of creating a duplicate.
+Create issues for the above with detailed descriptions adhering to the below. First, review previous issue names and current pending issues, then classify each problem in the input against the partitioning rubric below before any `gh` calls.
+
+## Partitioning rubric (run this first)
+
+| If the problems are…                                                                  | Then create…                                                                                                       |
+|---------------------------------------------------------------------------------------|--------------------------------------------------------------------------------------------------------------------|
+| **The same bug at the same place** as an existing open issue                          | No new issue. Update the existing issue body via `gh.exe issue edit <N> --body-file -`.                            |
+| **One shippable unit** (one PR, one reviewer, one priority) covering N small items    | **One** issue with a `- [ ]` task list in the body.                                                                |
+| **Distinct units of work that share a parent goal** (each needs its own PR/priority)  | **One parent issue + N sub-issues** (see sub-issue workflow below). Each sub-issue is `/Begin_session`-able.       |
+| **Distinct units of work with no shared parent**, but cross-referencing each other    | **N separate issues**, each listing the others under "Related issues / PRs."                                       |
+| **Genuinely unrelated**                                                               | **N separate issues**, no cross-references.                                                                        |
+
+"Overlap" means the **same** problem at the **same** place. Different bugs in the same module are NOT overlap — make them siblings (parent + sub-issues) or related (cross-linked), not a merged body. Never fold a distinct bug into another issue's body just because they share a file or feature.
 
 ## Environment & bootstrap (read first)
 
@@ -17,6 +29,19 @@ Create new issues for the above with detailed descriptions adhering to the below
   2. Create all issues in parallel (one `gh.exe issue create` per body) and capture the assigned numbers from each URL.
   3. In a single parallel batch, run `gh.exe issue edit <N> --title "[<N>] <slug>" --add-label <Px>` for each (rename + label in one call).
   4. Patch the `[N]` placeholders to real numbers in the local body files, then re-upload bodies in a single parallel batch.
+- **Sub-issue workflow** (when the rubric says parent + N children):
+  1. Create the parent issue first via `gh.exe issue create`. Capture its number `P` and rename/label it as `[<P>] <slug>` + `Px`.
+  2. Create each child issue in parallel (use `[P]` placeholder in child bodies if they reference the parent). Capture child numbers `C1..Cn`.
+  3. Link each child to the parent via the REST API (note: `sub_issues` takes the issue's numeric `id`, NOT its `number`):
+     ```bash
+     for Ci in $C1 $C2 ...; do
+       CHILD_ID=$(gh.exe api repos/:owner/:repo/issues/$Ci --jq .id)
+       gh.exe api -X POST repos/:owner/:repo/issues/$P/sub_issues -F sub_issue_id=$CHILD_ID
+     done
+     ```
+  4. Rename + label each child (`[<Ci>] <slug>` + `Px`) in a single parallel batch — same as the multi-issue flow above.
+  5. Patch `[P]` placeholders in child bodies to the real parent number, then re-upload child bodies in parallel.
+  6. The parent body should be a short "why this group exists" + the list of children. GitHub renders sub-issue progress automatically, so don't manually maintain a checklist of child statuses.
 
 ## Title (required)
 
