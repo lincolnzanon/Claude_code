@@ -6,9 +6,13 @@
 # that calls this script with --no-exec (since a running Claude session cannot
 # move its own cwd into the new worktree).
 #
-# Usage: begin-session [--no-exec] [ISSUE_NUMBER]
+# Usage: begin-session [--no-exec] [--emit-path] [ISSUE_NUMBER]
 #   --no-exec      Do setup, then print the manual "open a new terminal" command
 #                  instead of exec'ing claude. Used by the /Begin_session skill.
+#   --emit-path    Append the bare absolute worktree path as the final stdout
+#                  line. Intended for programmatic callers (e.g. the
+#                  /Begin_session skill, which captures it to cd into the
+#                  worktree mid-session). Implies --no-exec.
 #   ISSUE_NUMBER   GitHub issue to start. If omitted, the top 10 open issues
 #                  are listed by priority (P0 → P3) and you're prompted to pick.
 #
@@ -17,13 +21,15 @@
 set -euo pipefail
 
 NO_EXEC=false
+EMIT_PATH=false
 ISSUE_ARG=""
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --no-exec) NO_EXEC=true; shift ;;
+    --emit-path) EMIT_PATH=true; NO_EXEC=true; shift ;;
     -h|--help)
-      sed -n '2,15p' "$0" | sed 's/^# \{0,1\}//'
+      sed -n '2,17p' "$0" | sed 's/^# \{0,1\}//'
       exit 0
       ;;
     -*) echo "Unknown flag: $1" >&2; exit 2 ;;
@@ -100,18 +106,43 @@ BRANCH="${ISSUE_NUM}-${SLUG}"
 WORKTREE_REL=".worktrees/${BRANCH}"
 WORKTREE_ABS="${REPO_ROOT}/${WORKTREE_REL}"
 
+# --- Reuse existing worktree if present -------------------------------------
+# If a worktree for this issue already exists, switch into it instead of
+# failing. Everything below (fetch/branch/seed) runs only when there's nothing
+# to reuse. A path that exists but isn't a git worktree, or a branch that
+# exists without its worktree, is still treated as a conflict (fail fast).
+REUSE=false
+if git -C "$WORKTREE_ABS" rev-parse --show-toplevel >/dev/null 2>&1; then
+  REUSE=true
+elif [[ -e "$WORKTREE_ABS" ]]; then
+  echo "Worktree path '${WORKTREE_REL}' already exists but is not a git worktree. Remove it first." >&2
+  exit 1
+elif git show-ref --verify --quiet "refs/heads/${BRANCH}"; then
+  echo "Branch '${BRANCH}' already exists (no worktree). Delete it or pick a different issue." >&2
+  exit 1
+fi
+
+if ! $REUSE; then
+
 # --- Default branch + fresh fetch -------------------------------------------
 DEFAULT_BRANCH="$("$GH" repo view --json defaultBranchRef --jq .defaultBranchRef.name)"
 git fetch origin "$DEFAULT_BRANCH" --quiet
 
-# --- Fail fast on conflicts --------------------------------------------------
-if git show-ref --verify --quiet "refs/heads/${BRANCH}"; then
-  echo "Branch '${BRANCH}' already exists. Delete it or pick a different issue." >&2
-  exit 1
-fi
-if [[ -e "$WORKTREE_ABS" ]]; then
-  echo "Worktree path '${WORKTREE_REL}' already exists. Remove it first." >&2
-  exit 1
+# --- Warn if local default branch has diverged from origin ------------------
+# The worktree is branched from origin/$DEFAULT_BRANCH; if local has drifted,
+# merging back into local later is a real 3-way merge. Surface it now.
+if git show-ref --verify --quiet "refs/heads/${DEFAULT_BRANCH}"; then
+  _local="$(git rev-parse "${DEFAULT_BRANCH}")"
+  _origin="$(git rev-parse "origin/${DEFAULT_BRANCH}")"
+  if [[ "$_local" != "$_origin" ]]; then
+    _base="$(git merge-base "${DEFAULT_BRANCH}" "origin/${DEFAULT_BRANCH}")"
+    if [[ "$_base" != "$_local" && "$_base" != "$_origin" ]]; then
+      echo "warning: local '${DEFAULT_BRANCH}' has DIVERGED from origin/${DEFAULT_BRANCH}; prefer landing via PR into origin. Inspect: git log --oneline --graph origin/${DEFAULT_BRANCH}...${DEFAULT_BRANCH}" >&2
+    elif [[ "$_base" == "$_local" ]]; then
+      echo "note: local '${DEFAULT_BRANCH}' is behind origin/${DEFAULT_BRANCH}." >&2
+    fi
+  fi
+  unset _local _origin _base
 fi
 
 # --- Ensure .worktrees/ is gitignored ---------------------------------------
@@ -122,6 +153,33 @@ fi
 
 # --- Create the worktree (quiet) --------------------------------------------
 git worktree add -q -b "$BRANCH" "$WORKTREE_ABS" "origin/${DEFAULT_BRANCH}"
+
+# --- Link node_modules so lint/build/test work in the worktree --------------
+if [[ -d "${REPO_ROOT}/node_modules" && ! -e "${WORKTREE_ABS}/node_modules" ]]; then
+  ln -s "${REPO_ROOT}/node_modules" "${WORKTREE_ABS}/node_modules" 2>/dev/null \
+    && echo "linked node_modules -> ${REPO_ROOT}/node_modules" >&2 || true
+fi
+
+# --- Link .env* files so every worktree shares the same secrets --------------
+# These files should be gitignored (untracked), so a fresh worktree checkout
+# won't contain them. Symlink each root-level .env* file to the canonical copy
+# in the main checkout so every worktree uses the same API keys — and merging
+# the branch back is a no-op (nothing about env lives in git). readlink -f
+# resolves through any existing symlink (e.g. when begin-session is run from
+# inside another worktree) so we never create symlink chains. Files already
+# present in the worktree (e.g. a tracked .env.example) are left untouched.
+shopt -s nullglob
+for _env in "${REPO_ROOT}"/.env*; do
+  [[ -f "$_env" ]] || continue
+  _name="$(basename "$_env")"
+  _target="${WORKTREE_ABS}/${_name}"
+  [[ -e "$_target" || -L "$_target" ]] && continue
+  _src="$(readlink -f "$_env")"
+  ln -s "$_src" "$_target" 2>/dev/null \
+    && echo "linked ${_name} -> ${_src}" >&2 || true
+done
+shopt -u nullglob
+unset _env _name _target _src
 
 # --- Trim issue body: keep Summary + Suggested implementation + Files -------
 TRIMMED_BODY="$(BODY="$ISSUE_BODY" python3 - <<'PYEOF'
@@ -165,11 +223,19 @@ ${TRIMMED_BODY}
 Closes #${ISSUE_NUM}
 EOF
 
+fi  # end create-only steps (skipped when reusing an existing worktree)
+
 # --- Final output ------------------------------------------------------------
+if $REUSE; then
+  READY_MSG="Worktree already exists — reusing."
+else
+  READY_MSG="Worktree ready."
+fi
+
 if $NO_EXEC; then
   cat <<EOF
 
-Worktree ready.
+${READY_MSG}
 
   Issue:   #${ISSUE_NUM} — ${ISSUE_TITLE}
   Branch:  ${BRANCH}
@@ -179,9 +245,12 @@ Worktree ready.
 Open a new terminal and run:
   cd "${WORKTREE_ABS}" && claude
 EOF
+  if $EMIT_PATH; then
+    printf '%s\n' "$WORKTREE_ABS"
+  fi
 else
   cd "$WORKTREE_ABS"
-  echo "Worktree ready at: $WORKTREE_ABS"
+  echo "${READY_MSG%.} at: $WORKTREE_ABS"
   echo "Launching claude…"
   exec claude
 fi

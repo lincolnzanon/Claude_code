@@ -20,32 +20,39 @@ This skill is a **thin shim** over `~/.local/bin/begin-session`, which is the ca
 - Resolve issue number (or list + prompt)
 - Fetch issue title/url/body once
 - Derive `<num>-<slug>` branch + `.worktrees/<branch>` path
-- Detect default branch, fetch fresh, fail-fast on existing branch/path
+- Detect default branch, fetch fresh (creation only)
+- **Reuse if it already exists**: if `.worktrees/<branch>` is already a git worktree for this issue, skip creation/seeding and just switch into it (existing `PLAN.md` is left untouched). A path that exists but isn't a worktree, or a branch with no worktree, still fails fast as a conflict.
 - Ensure `.worktrees/` is in `.gitignore`
 - Create the worktree (`git worktree add -q`)
+- Symlink `node_modules` and any root-level `.env*` files from the main checkout into the worktree, so lint/build/test and the same API keys work everywhere. Env files must be gitignored/untracked for this to stay a no-op on merge; existing (e.g. tracked `.env.example`) files in the worktree are left untouched.
 - Seed `PLAN.md` with a trimmed issue body (Summary, Suggested implementation, Files expected to change) plus a `Closes #N` trailer
 - Print the next-step command
 
-Invoking it from **inside Claude Code** (this skill's path) cannot end with `exec claude`, because a running Claude session can't move its own cwd into the worktree. So this skill calls the wrapper with `--no-exec`: the wrapper does full setup, then prints the manual one-liner.
+Invoking it from **inside Claude Code** (this skill's path) cannot end with `exec claude` — a running Claude session can't replace its own process with a new one rooted in the worktree. But the Bash tool's cwd **does** persist across calls, so we *can* `cd` into the worktree mid-session and have every subsequent git/build/test command run there on the new branch. That's what this skill does: calls the wrapper with `--emit-path` (implies `--no-exec`), captures the worktree path from the final stdout line, and `cd`s into it.
+
+What carries over after the cd vs. what doesn't:
+- **Carries over**: subsequent Bash tool calls (cwd persists), Read/Edit/Write (absolute paths), skills, memory, CLAUDE.md (identical file in the worktree checkout).
+- **Doesn't**: the harness's session-start snapshots (initial cwd, initial git status banner). Minor — those are one-shot at startup.
 
 ## Process
 
-Run the wrapper with `--no-exec` and the issue argument (or no argument):
+1. Invoke the wrapper with `--emit-path` and the issue argument (or no argument), capturing stdout:
 
-```bash
-begin-session --no-exec ${ARGUMENTS:-}
-```
+   ```bash
+   begin-session --emit-path ${ARGUMENTS:-}
+   ```
 
-If `$ARGUMENTS` is empty, the wrapper enters interactive mode (lists issues, prompts for a number). In that case, surface the listing to the user, ask which issue they want via `AskUserQuestion`, then re-invoke `begin-session --no-exec <chosen_number>`.
+   If `$ARGUMENTS` is empty, the wrapper enters interactive mode (lists issues, prompts for a number). In that case, surface the listing to the user, ask which issue they want via `AskUserQuestion`, then re-invoke `begin-session --emit-path <chosen_number>`.
 
-After the wrapper exits 0, its last lines look like:
+2. The wrapper's stdout ends with two things:
+   - A human-readable block (`Worktree ready.`, or `Worktree already exists — reusing.` when reusing … `Open a new terminal and run: cd "<path>" && claude`)
+   - **One final bare line**: the absolute worktree path (from `--emit-path`).
 
-```
-Open a new terminal and run:
-  cd "<WORKTREE_ABS>" && claude
-```
+   Capture that final line — e.g. `WORKTREE="$(begin-session --emit-path <N> | tee /dev/stderr | tail -n1)"` so the human block still streams to the user while you grab the path. (Or run the wrapper, then `tail -n1` the captured output.)
 
-**Relay that command to the user as the next action** — that's the whole point of running the skill from inside Claude. Do not try to `! claude` or otherwise launch Claude from inside this session; the cwd-switch is not possible from a running Claude.
+3. In the **same Bash tool call** (or a follow-up — cwd persists either way), `cd "$WORKTREE"`. From now on every Bash tool call in this session runs inside the new worktree on the new branch.
+
+4. Tell the user the session has switched: name the branch, the worktree path, and that they can open a fresh terminal there if they prefer a clean session — but it's no longer required.
 
 ## If the wrapper is missing
 
@@ -53,6 +60,7 @@ If `command -v begin-session` returns nothing, tell the user the canonical wrapp
 
 ## Notes for the agent
 
-- Keep your own output minimal: the wrapper already prints a complete summary. After it succeeds, re-state only the final two-line `Open a new terminal and run:` block so the user has it as the last thing on screen.
+- Keep your own output minimal: the wrapper already prints a complete summary. After it succeeds and you've `cd`'d into the worktree, confirm in ~1–2 lines: "Session switched to `<branch>` at `<path>`. Bash tool calls now run there."
 - If the wrapper fails (non-zero exit), surface its stderr verbatim. Do not retry automatically.
 - The wrapper handles the `gh` vs `gh.exe` fallback and PLAN.md trimming itself. Do not duplicate either.
+- The `--emit-path` flag is what makes the in-session cwd switch possible — don't drop it. Without it the wrapper still works but you lose the machine-parseable final line and have to grep the human block.
