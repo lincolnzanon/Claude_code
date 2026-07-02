@@ -52,22 +52,35 @@ if [[ ! "$BRANCH" =~ ^([0-9]+)- ]]; then
 fi
 ISSUE_NUM="${BASH_REMATCH[1]}"
 
-# WSL+worktree fix: when GH=gh.exe is being invoked inside a git worktree
-# (not the main checkout), the Windows binary cannot resolve the gitfile-
-# pointer in .git → it bails with "not a git repository". Inject an
-# explicit --repo OWNER/NAME so gh.exe skips local-repo detection.
+# WSL+worktree fix: when GH=gh.exe is invoked inside a git worktree (not the
+# main checkout), the Windows binary cannot resolve the gitfile pointer in .git
+# and bails with "not a git repository" — and `gh pr create` does so even when
+# --repo is supplied (it still inspects local git). Two-part fix:
+#   1. Inject explicit --repo OWNER/NAME so subcommands that accept it skip
+#      local-repo detection. NOTE: `gh repo view` takes a POSITIONAL repo, not
+#      --repo, so it is handled separately via $OWNER_REPO below.
+#   2. Run every gh.exe call from the MAIN worktree dir (which has a real .git)
+#      via gh_cmd(). All identifying args (--repo/--head/--base) are explicit, so
+#      operating on the worktree's branch from the main checkout is safe.
 GH_REPO_ARGS=()
+OWNER_REPO=""
+GH_CWD="."
 if [[ "$GH" == "gh.exe" ]]; then
   GIT_DIR_PATH="$(git rev-parse --git-dir)"
   GIT_COMMON_DIR="$(git rev-parse --git-common-dir)"
   if [[ "$GIT_DIR_PATH" != "$GIT_COMMON_DIR" ]]; then
     # Inside a worktree. Derive owner/name from the GitHub remote URL.
     OWNER_REPO="$(printf '%s' "$REMOTE_URL" | sed -E 's#.*github\.com[:/]([^/]+/[^/.]+)(\.git)?$#\1#')"
-    if [[ -n "$OWNER_REPO" ]]; then
-      GH_REPO_ARGS=(--repo "$OWNER_REPO")
-    fi
+    [[ -n "$OWNER_REPO" ]] && GH_REPO_ARGS=(--repo "$OWNER_REPO")
+    # The main worktree is always the first entry of `git worktree list`.
+    MAIN_WT="$(git worktree list --porcelain | awk '/^worktree /{print $2; exit}')"
+    [[ -n "$MAIN_WT" && -d "$MAIN_WT" ]] && GH_CWD="$MAIN_WT"
   fi
 fi
+
+# Run gh from $GH_CWD: the main worktree under the WSL+worktree case above, "."
+# (in place) otherwise. git commands still run in the current worktree.
+gh_cmd() { ( cd "$GH_CWD" && "$GH" "$@" ); }
 
 # `git status --porcelain` reports untracked files too; the /Begin_session
 # skill seeds a `PLAN.md` scratch file at the worktree root that is not
@@ -92,19 +105,20 @@ if [[ "$LOCAL_SHA" != "$REMOTE_SHA" ]]; then
   die "local and upstream diverge (ahead $AHEAD, behind $BEHIND). Push/pull before opening a PR."
 fi
 
-EXISTING_PR="$("$GH" "${GH_REPO_ARGS[@]}" pr list --head "$BRANCH" --state open --json number,url --jq '.[0].url // empty')"
+EXISTING_PR="$(gh_cmd "${GH_REPO_ARGS[@]}" pr list --head "$BRANCH" --state open --json number,url --jq '.[0].url // empty')"
 if [[ -n "$EXISTING_PR" ]]; then
   die "an open PR already exists for branch '$BRANCH': $EXISTING_PR"
 fi
 
-if ! "$GH" "${GH_REPO_ARGS[@]}" issue view "$ISSUE_NUM" --json number >/dev/null 2>&1; then
+if ! gh_cmd "${GH_REPO_ARGS[@]}" issue view "$ISSUE_NUM" --json number >/dev/null 2>&1; then
   die "issue #$ISSUE_NUM not found (branch '$BRANCH' implies it should exist). Rename the branch or create the issue."
 fi
 
-DEFAULT_BRANCH="$("$GH" "${GH_REPO_ARGS[@]}" repo view --json defaultBranchRef --jq '.defaultBranchRef.name')"
+# `gh repo view` uses a POSITIONAL repo arg (not --repo); pass $OWNER_REPO when set.
+DEFAULT_BRANCH="$(gh_cmd repo view ${OWNER_REPO:+"$OWNER_REPO"} --json defaultBranchRef --jq '.defaultBranchRef.name')"
 [[ -n "$DEFAULT_BRANCH" ]] || die "could not determine repo default branch."
 
-mapfile -t LABELS < <("$GH" "${GH_REPO_ARGS[@]}" issue view "$ISSUE_NUM" --json labels --jq '.labels[].name' 2>/dev/null || true)
+mapfile -t LABELS < <(gh_cmd "${GH_REPO_ARGS[@]}" issue view "$ISSUE_NUM" --json labels --jq '.labels[].name' 2>/dev/null || true)
 
 BODY="$(printf '## Summary\n%s\n\n## Test plan\n%s\n\nCloses #%s\n' "$SUMMARY" "$TEST_PLAN" "$ISSUE_NUM")"
 
@@ -113,5 +127,5 @@ for label in "${LABELS[@]:-}"; do
   [[ -n "$label" ]] && GH_ARGS+=(--label "$label")
 done
 
-PR_URL="$("$GH" "${GH_ARGS[@]}")" || die "gh pr create failed."
+PR_URL="$(gh_cmd "${GH_ARGS[@]}")" || die "gh pr create failed."
 printf '%s\n' "$PR_URL"

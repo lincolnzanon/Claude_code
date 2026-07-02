@@ -12,6 +12,27 @@ Create issues for the above with detailed descriptions adhering to the below. Fi
 
 "Overlap" means the **same** problem at the **same** place. Different bugs in the same module are NOT overlap — make them siblings (parent + sub-issues) or related (cross-linked), not a merged body. Never fold a distinct bug into another issue's body just because they share a file or feature.
 
+## Overlap check (run BEFORE any `issue create`)
+
+Always do this in two passes so titles don't hide overlap:
+
+1. **Browse recent open issues** (titles + labels only, ~50 most recent):
+   ```bash
+   gh.exe issue list --state all --limit 50 --json number,title,labels
+   ```
+2. **Targeted search** of titles AND bodies for any term from the problem you're about to file:
+   ```bash
+   gh.exe issue list --state all --search "<term1> <term2> in:title,body" --json number,title,state
+   ```
+3. **Read the body** of any title that even *might* overlap before deciding:
+   ```bash
+   gh.exe issue view <N> --json title,body,state
+   ```
+
+**Critical gotcha — never use bare `--search "x OR y OR z"`.** Multi-term `OR` queries without an `in:` qualifier can return results from across all of GitHub (not just the current repo), flooding context with hundreds of irrelevant issues. Always include `in:title,body` (or narrower like `in:title`), and prefer space-separated AND-terms over `OR`.
+
+If an overlap candidate is confirmed (per the rubric above), update its body via `gh.exe issue edit <N> --body-file -` instead of creating a duplicate. Re-emit the *whole* body (gh replaces, doesn't append) — preserve the existing structure and add a "Recurrence log" / "Reconfirmed YYYY-MM-DD" section.
+
 ## Environment & bootstrap (read first)
 
 - **WSL note**: if `gh` is not on PATH (common on this user's Windows + WSL setup), use the Windows binary `gh.exe` directly. Check `command -v gh.exe` once; do NOT chase `gh` on PATH.

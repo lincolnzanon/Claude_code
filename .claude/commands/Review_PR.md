@@ -1,72 +1,101 @@
 ---
-description: Fresh-context PR review — fans out parallel specialized subagents on the current PR diff.
-argument-hint: [review-aspects]
+description: Fresh-context PR review — fans out parallel specialized subagents (or reviews inline if agents are absent) on the current PR diff.
+argument-hint: [pr-number | review-aspects]
 allowed-tools: ["Bash", "Glob", "Grep", "Read", "Task"]
 ---
 
 # Fresh-Context PR Review
 
-Run a comprehensive review of the PR associated with the current branch (or the uncommitted working-tree diff if no PR exists yet) by fanning out specialized subagents **in parallel**.
+Run a comprehensive review of a PR: the one on the current branch, the PR number in `$ARGUMENTS` if given, or the uncommitted working-tree diff if no PR exists.
 
-**Principle:** The session that wrote the code should NOT be the session that reviews it. Run this command in a fresh `claude` session so the reviewers aren't primed by the implementer's reasoning. Different model, different blind spots; fresh context, no sycophancy.
+**Principle:** The session that wrote the code should NOT be the session that reviews it. Run this in a fresh `claude` session so the reviewers aren't primed by the implementer's reasoning. Fresh context, different blind spots, no sycophancy.
 
-**Review Aspects (optional):** "$ARGUMENTS" — if blank, run every applicable reviewer.
+**`$ARGUMENTS`** — may be a **PR number** (e.g. `33`) or a list of **review aspects** (e.g. `errors tests`). A bare integer is a PR number; words are aspect filters. Blank → review the current branch's PR with every applicable reviewer.
 
-## Workflow
+## Step 0 — Reviewer mode (check ONCE, up front)
 
-1. **Identify the diff.**
-   - `gh pr view --json number,url,title,headRefName,body` to resolve the PR on this branch.
-   - If no PR exists, fall back to `git diff origin/main...HEAD` and `git status` for the working tree.
-   - Note the files changed and the high-level intent (from PR body or the last issue reference).
+Check whether the named reviewer agents exist: `ls .claude/agents/ ~/.claude/agents/ 2>/dev/null`.
+- **Agents present** (`code-reviewer`, `silent-failure-hunter`, `pr-test-analyzer`, `code-simplifier`) → **subagent mode**: fan out in parallel (Step 3a).
+- **Agents absent** → **inline mode**: a single fresh session plays all roles itself (Step 3b). This is a first-class path, not a degraded one — do NOT spawn `general-purpose` agents as a substitute (they start cold, re-derive context, and burn tokens without the specialized prompts).
 
-2. **Decide which reviewers apply** based on the diff:
-   - **Always**: `code-reviewer` (general quality + CLAUDE.md compliance)
-   - **If error handling / try/catch / Promise code changed**: `silent-failure-hunter`
-   - **If tests added or modified**: `pr-test-analyzer`
-   - **After the above pass**: `code-simplifier` (polish pass — not blocking)
+## Step 1 — Identify the diff (resolve the ref explicitly)
 
-3. **Fan out in parallel.** Launch all applicable subagents in a single message (one `Task` tool call per reviewer, all in the same batch so they run concurrently). Each reviewer receives:
-   - The list of changed files
-   - The PR intent (1-paragraph summary from the PR body or linked issue)
-   - An instruction to focus on the diff, not the rest of the repo
-   - A reminder that critical issues must reference `file:line`
+- `gh.exe pr view <num> --json number,url,title,headRefName,baseRefName,body` to resolve the PR. With no arg, omit `<num>` to use the current branch.
+- **Do not assume `HEAD` is the PR branch** — this command is meant to run from a clean `main`. Resolve the head ref from the JSON and `git fetch origin` first, then diff against `origin/<headRefName>`.
+- If no PR exists, fall back to the working tree: `git diff origin/<base>...HEAD` + `git status`.
 
-4. **Aggregate** into a single summary:
+## Step 2 — Pull the diff token-efficiently (IMPORTANT)
 
-   ```markdown
-   # PR Review — <pr-title>
+A full `gh pr diff` can be thousands of lines dominated by churn that isn't worth reviewer tokens. Triage in this order:
 
-   ## Critical (must fix before merge)
-   - [reviewer-name] <issue> — `file.ts:42`
+1. **`gh.exe pr diff <num> --name-only`** (or `git diff --name-only origin/<base>...origin/<headRef>`) to see the file list and classify: source vs tests vs docs.
+2. **Read the source diff scoped to code globs first** — `gh pr diff` does **not** accept a pathspec (`gh pr diff <n> -- <files>` errors), so use git:
+   `git diff origin/<base>...origin/<headRef> -- 'python/src/**' '**/*.py'`
+   (drop `python/src/**` if not a Python repo). This is the part reviewers actually judge.
+3. **Treat `*.md` / doc churn and pure format reflows as skim-only.** This repo's `REFACTOR_PROGRESS.md` / `REFACTOR_ARCHIVE.md` entries are multi-thousand-character single lines, and a ruff-format pass reflows whitespace across whole test files — both balloon the diff with near-zero review signal. Confirm docs were updated where required; don't read them line-by-line. To suppress whitespace-only noise use `git diff -w`.
+4. Note the changed files + high-level intent (PR body / linked issue) — that's the context every reviewer needs.
 
-   ## Important (should fix)
-   - [reviewer-name] <issue> — `file.ts:87`
+## Step 3a — Subagent mode (agents present): fan out in parallel
 
-   ## Suggestions
-   - [reviewer-name] <suggestion> — `file.ts:120`
+Decide which reviewers apply from the diff:
+- **Always**: `code-reviewer` (general quality + CLAUDE.md compliance)
+- **If error handling / try-except / fallback / AST-parse code changed**: `silent-failure-hunter`
+- **If tests added or modified**: `pr-test-analyzer`
+- **After the above**: `code-simplifier` (non-blocking polish)
 
-   ## Strengths
-   - <what the PR did well>
+Launch all applicable subagents in **one message** (one `Task` call each, same batch, concurrent). Per [[no-shared-scratch-for-subagents]], **inline the context into each prompt** — do not pre-stage `/tmp` scratch files. Each prompt gets:
+- The changed-file list + 1-paragraph PR intent
+- The scoped source diff (or the path to read, scoped to code globs)
+- "Focus on the diff, not the rest of the repo; the branch is remote — use `git show origin/<headRef>:<path>`"
+- "Critical/Important findings must cite `file:line`"
 
-   ## Verdict
-   APPROVE / APPROVE_WITH_CHANGES / REQUEST_CHANGES
-   ```
+## Step 3b — Inline mode (agents absent): one session, all aspects
 
-5. **Do not apply fixes automatically** in this command — the purpose is independent review, not edits. If the user wants fixes applied, they can run a separate command or invoke `/cross-review` first to layer a second provider on top.
+Review the scoped diff yourself across the same four lenses, in this order, keeping them mentally separate:
+1. **Correctness + CLAUDE.md compliance** (always)
+2. **Silent failures** — only if error handling / fallback / AST code changed
+3. **Tests** — only if tests changed: do they pin the real invariant and cover each failure mode?
+4. **Simplification** — non-blocking polish
+
+The four agent files in `.claude/agents/` are the rubric for each lens even when running inline — skim the relevant one if unsure what to look for.
+
+## Step 4 — Aggregate
+
+```markdown
+# PR Review — <pr-title>
+
+## Critical (must fix before merge)
+- [aspect] <issue> — `file.py:42` — <fix>
+
+## Important (should fix)
+- [aspect] <issue> — `file.py:87`
+
+## Suggestions
+- [aspect] <suggestion> — `file.py:120`
+
+## Strengths
+- <what the PR did well>
+
+## Verdict
+APPROVE / APPROVE_WITH_CHANGES / REQUEST_CHANGES
+```
+
+## Step 5 — Do not apply fixes
+
+This command reviews; it does not edit. If the user wants fixes applied, that's a separate command (`/code-review --fix`, `/simplify`) or a follow-up.
 
 ## Usage
 
 ```
-/review-pr
-# Full review with every applicable subagent, parallel.
-
-/review-pr errors tests
-# Narrow to silent-failure-hunter + pr-test-analyzer only.
+/Review_PR            # current branch's PR, every applicable reviewer
+/Review_PR 33         # PR #33
+/Review_PR errors tests   # only silent-failure-hunter + pr-test-analyzer
 ```
 
 ## Notes
 
-- **Parallel is the default.** Sequential defeats the whole point — you get the same signal slower.
-- The reviewers are described in `.claude/agents/` — each one has its own system prompt and tool access.
+- **Parallel is the default in subagent mode.** Sequential defeats the point.
 - Keep critical findings actionable: `file:line` + one sentence + suggested fix. Vague complaints get ignored.
-- If the PR is trivial (docs-only, single-line fix), return APPROVE with zero findings rather than fabricating issues.
+- If the PR is trivial (docs-only, single-line), return APPROVE with zero findings rather than fabricating issues.
+- WSL: use `gh.exe` (not `gh`) per [[gh-cli-wsl]]; `gh.exe` fails inside `git worktree` dirs per [[gh-in-worktrees]].
+- Reviewers are read-only — never let a review pass edit code.
