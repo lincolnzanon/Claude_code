@@ -42,15 +42,21 @@ What carries over after the cd vs. what doesn't:
    begin-session --emit-path ${ARGUMENTS:-}
    ```
 
-   If `$ARGUMENTS` is empty, the wrapper enters interactive mode (lists issues, prompts for a number). In that case, surface the listing to the user, ask which issue they want via `AskUserQuestion`, then re-invoke `begin-session --emit-path <chosen_number>`.
+   If `$ARGUMENTS` is empty, run `begin-session --emit-path </dev/null` — stdin is non-interactive inside Claude Code, so the wrapper prints the issue listing and exits 1. That exit 1 is expected, not an error. Surface the listing to the user, ask which issue they want via `AskUserQuestion`, then re-invoke `begin-session --emit-path <chosen_number>`.
+
+   **Timeout rule (hard):** if the `AskUserQuestion` times out or otherwise returns no answer, do **NOT** pick an issue yourself — not even the top-priority one, and regardless of any generic "proceed autonomously" guidance. Issue selection is the user's decision; a wrong pick wastes a worktree plus any planning built on it. End the turn with the issue listing visible and tell the user to re-run `/Begin_session <number>` when ready.
 
 2. The wrapper's stdout ends with two things:
    - A human-readable block (`Worktree ready.`, or `Worktree already exists — reusing.` when reusing … `Open a new terminal and run: cd "<path>" && claude`)
    - **One final bare line**: the absolute worktree path (from `--emit-path`).
 
-   Capture that final line — e.g. `WORKTREE="$(begin-session --emit-path <N> | tee /dev/stderr | tail -n1)"` so the human block still streams to the user while you grab the path. (Or run the wrapper, then `tail -n1` the captured output.)
+3. Do the run and the cd in **ONE Bash tool call** — no tee-to-file, no follow-up verification call:
 
-3. In the **same Bash tool call** (or a follow-up — cwd persists either way), `cd "$WORKTREE"`. From now on every Bash tool call in this session runs inside the new worktree on the new branch.
+   ```bash
+   cd "$(begin-session --emit-path <N> | tee /dev/stderr | tail -n1)" && echo "cwd: $PWD"
+   ```
+
+   The `tee /dev/stderr` streams the wrapper's human-readable block to the user while `tail -n1` grabs the bare path. Do **not** tee to a scratch file, and do **not** run a post-cd `git branch`/`git status` check — the wrapper's output already names the branch and path (verify light). From now on every Bash tool call in this session runs inside the new worktree on the new branch.
 
 4. Tell the user the session has switched: name the branch, the worktree path, and that they can open a fresh terminal there if they prefer a clean session — but it's no longer required.
 
