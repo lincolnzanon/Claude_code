@@ -1,0 +1,34 @@
+Statusline "task:" row — auto-generated ≤5-word session description.
+
+Install:
+  1. Copy scripts/statusline-command.sh and scripts/statusline-task-summary.sh
+     to ~/.claude/ and chmod +x them. statusline-task-summary.sh has the
+     claude binary path hardcoded (CLAUDE_BIN) — adjust per machine.
+  2. Wire up ~/.claude/settings.json as below.
+
+How it works: the UserPromptSubmit hook detaches a background
+`claude -p --model haiku` call per prompt and writes a short summary to
+/tmp/claude-statusline-task-<session_id>; the statusline script renders it
+as a second row ("task: Reviewing PR 82"), falling back to session_name.
+CC_TASKLINE=1 is the guard env var: it stops the hook from re-triggering
+itself inside the nested claude call and silences the chime hooks there
+(see Hooks/done_sound for the guarded chime commands).
+
+settings.json wiring:
+
+"statusLine": {
+  "type": "command",
+  "command": "bash /home/linco/.claude/statusline-command.sh"
+},
+"hooks": {
+  "UserPromptSubmit": [
+    {
+      "hooks": [
+        {
+          "type": "command",
+          "command": "bash /home/linco/.claude/statusline-task-summary.sh"
+        }
+      ]
+    }
+  ]
+}

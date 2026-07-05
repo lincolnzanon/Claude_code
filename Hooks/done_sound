@@ -1,15 +1,25 @@
-"Stop": [                                                                                                                  {                                                                                                                          "hooks": [                                                                                                         
+"Stop": [
+  {
+    "hooks": [
       {
         "type": "command",
-        "command": "sleep 0.5 && powershell.exe -Command \"(New-Object Media.SoundPlayer                               
-'C:\\Windows\\Media\\chimes.wav').PlaySync()\""                                                                                }                                                                                                                
-    ]                                                                                                                  
+        "command": "[ -n \"$CC_TASKLINE\" ] && exit 0; sleep 0.5 && powershell.exe -Command \"(New-Object Media.SoundPlayer 'C:\\Windows\\Media\\chimes.wav').PlaySync()\""
+      }
+    ]
   }
 ],
 "Notification": [
-  {                                                                                                                          "hooks": [
-      {                                                                                                                          "type": "command",
-        "command": "powershell.exe -Command \"(New-Object Media.SoundPlayer                                            
-'C:\\Windows\\Media\\chimes.wav').PlaySync()\""                                                                                }
-    ]                                                                                                                  
-  }                                                                                                                      ]
+  {
+    "hooks": [
+      {
+        "type": "command",
+        "command": "[ -n \"$CC_TASKLINE\" ] && exit 0; powershell.exe -Command \"(New-Object Media.SoundPlayer 'C:\\Windows\\Media\\chimes.wav').PlaySync()\""
+      }
+    ]
+  }
+]
+
+The CC_TASKLINE guard keeps the chime silent inside the nested `claude -p`
+haiku calls made by the statusline task-row hook (the guard var is exported
+by statusline-task-summary.sh; see Hooks/statusline_task_row). Behavior is
+unchanged when CC_TASKLINE is unset.
