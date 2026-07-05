@@ -22,6 +22,7 @@ Check whether the named reviewer agents exist: `ls .claude/agents/ ~/.claude/age
 
 - `gh.exe pr view <num> --json number,url,title,headRefName,baseRefName,body` to resolve the PR. With no arg, omit `<num>` to use the current branch.
 - **Do not assume `HEAD` is the PR branch** — this command is meant to run from a clean `main`. Resolve the head ref from the JSON and `git fetch origin` first, then diff against `origin/<headRefName>`.
+- **Verify where (or whether) the head is checked out locally before telling reviewers where to read.** The session-start git status header can be stale, and repos using the `/Begin_session` flow keep branches in `.worktrees/<branch>` while the main checkout stays on `main`. Run `git worktree list` and only claim "the branch is checked out at `<path>`" if that tree's SHA matches `origin/<headRefName>`; otherwise instruct reviewers to read via `git show origin/<headRef>:<path>`. A wrong local-path claim makes every reviewer independently waste tokens rediscovering it.
 - If no PR exists, fall back to the working tree: `git diff origin/<base>...HEAD` + `git status`.
 
 ## Step 2 — Pull the diff token-efficiently (IMPORTANT)
@@ -34,6 +35,7 @@ A full `gh pr diff` can be thousands of lines dominated by churn that isn't wort
    (drop `python/src/**` if not a Python repo). This is the part reviewers actually judge.
 3. **Treat `*.md` / doc churn and pure format reflows as skim-only.** This repo's `REFACTOR_PROGRESS.md` / `REFACTOR_ARCHIVE.md` entries are multi-thousand-character single lines, and a ruff-format pass reflows whitespace across whole test files — both balloon the diff with near-zero review signal. Confirm docs were updated where required; don't read them line-by-line. To suppress whitespace-only noise use `git diff -w`.
 4. Note the changed files + high-level intent (PR body / linked issue) — that's the context every reviewer needs.
+5. **Re-review rounds:** if the PR body records earlier review-fix rounds, name the already-fixed findings and the deferred follow-up issues in every reviewer prompt (so they aren't re-reported), and tell reviewers to weight scrutiny toward the commits since the last reviewed SHA while keeping the full diff as context.
 
 ## Step 3a — Subagent mode (agents present): fan out in parallel
 
