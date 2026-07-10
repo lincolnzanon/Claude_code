@@ -14,7 +14,7 @@ Run a comprehensive review of a PR: the one on the current branch, the PR number
 
 ## Step 0 — Reviewer mode (check ONCE, up front)
 
-Check whether the named reviewer agents exist: `ls .claude/agents/ ~/.claude/agents/ 2>/dev/null`.
+Check whether the named reviewer agents exist: `ls .claude/agents/ ~/.claude/agents/ 2>/dev/null || true` (the `|| true` keeps a missing dir from surfacing as an error).
 - **Agents present** (`code-reviewer`, `silent-failure-hunter`, `pr-test-analyzer`, `code-simplifier`) → **subagent mode**: fan out in parallel (Step 3a).
 - **Agents absent** → **inline mode**: a single fresh session plays all roles itself (Step 3b). This is a first-class path, not a degraded one — do NOT spawn `general-purpose` agents as a substitute (they start cold, re-derive context, and burn tokens without the specialized prompts).
 
@@ -31,9 +31,9 @@ A full `gh pr diff` can be thousands of lines dominated by churn that isn't wort
 
 1. **`gh.exe pr diff <num> --name-only`** (or `git diff --name-only origin/<base>...origin/<headRef>`) to see the file list and classify: source vs tests vs docs.
 2. **Read the source diff scoped to code globs first** — `gh pr diff` does **not** accept a pathspec (`gh pr diff <n> -- <files>` errors), so use git:
-   `git diff origin/<base>...origin/<headRef> -- 'python/src/**' '**/*.py'`
-   (drop `python/src/**` if not a Python repo). This is the part reviewers actually judge.
-3. **Treat `*.md` / doc churn and pure format reflows as skim-only.** This repo's `REFACTOR_PROGRESS.md` / `REFACTOR_ARCHIVE.md` entries are multi-thousand-character single lines, and a ruff-format pass reflows whitespace across whole test files — both balloon the diff with near-zero review signal. Confirm docs were updated where required; don't read them line-by-line. To suppress whitespace-only noise use `git diff -w`.
+   `git diff origin/<base>...origin/<headRef> -- <source globs>`
+   Derive the globs from the name-only list (e.g. `'src/**'` for a JS/TS repo, `'**/*.py'` for Python). This is the part reviewers actually judge.
+3. **Treat `*.md` / doc churn and pure format reflows as skim-only.** Progress logs and changelogs with huge single-line entries, and formatter passes (ruff/prettier/gofmt) that reflow whole files, balloon the diff with near-zero review signal. Confirm docs were updated where required; don't read them line-by-line. To suppress whitespace-only noise use `git diff -w`.
 4. Note the changed files + high-level intent (PR body / linked issue) — that's the context every reviewer needs.
 5. **Re-review rounds:** if the PR body records earlier review-fix rounds, name the already-fixed findings and the deferred follow-up issues in every reviewer prompt (so they aren't re-reported), and tell reviewers to weight scrutiny toward the commits since the last reviewed SHA while keeping the full diff as context.
 
@@ -101,3 +101,7 @@ This command reviews; it does not edit. If the user wants fixes applied, that's 
 - If the PR is trivial (docs-only, single-line), return APPROVE with zero findings rather than fabricating issues.
 - WSL: use `gh.exe` (not `gh`) per [[gh-cli-wsl]]; `gh.exe` fails inside `git worktree` dirs per [[gh-in-worktrees]].
 - Reviewers are read-only — never let a review pass edit code.
+- **No `cd` in parallel tool batches.** When inspecting a worktree, use absolute paths or `git -C <worktree>` — a `cd` in one call of a parallel batch can leave a sibling command running in the wrong directory, where an empty grep silently reads as "no findings".
+- **Use the dedicated Grep/Read tools, not Bash `grep`/`sed`/`cat`,** to inspect files during review — fewer permission prompts, structured output. Reserve Bash for `git`/`gh` commands.
+- **Token: prefer the diff and `git show origin/<headRef>:<path>` over Read on files inside a checked-out worktree** — reading inside a worktree injects that worktree's CLAUDE.md into context as a duplicate of what you already have.
+- **Unchecked test-plan items (`- [ ]`) in the PR body are review findings** when they cover the change's core invariant — call them out in the verdict rather than treating the test plan as done.

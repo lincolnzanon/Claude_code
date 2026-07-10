@@ -31,6 +31,8 @@ gh.exe pr checks <num>        # must be passing or "no checks reported"
 ```
 Refuse to merge unless: `state == OPEN`, `mergeable == MERGEABLE`, `mergeStateStatus == CLEAN`, and checks pass (or none configured). If any is off (DIRTY, BEHIND, BLOCKED, failing checks), report it and stop — don't try to force it.
 
+**Test-plan check** — scan the PR body for unchecked test-plan items (`- [ ]`). Unchecked items that exercise the change's core invariant are merge blockers: run them now if you can (e.g. via the project's verify/browser tooling), otherwise stop and ask the user to run or explicitly waive them. Items that are clearly optional/nice-to-have can pass with a note in the final report.
+
 **No-data-loss check** — confirm the branch on origin is what was reviewed and nothing local is unpushed:
 ```
 git fetch origin
@@ -92,5 +94,6 @@ Summarize: merge commit SHA + base, issue state, worktree removed, branch delete
 ## Refuse / stop conditions (summary)
 - No qualifying review this session → Step 1 refusal.
 - Not mergeable / not clean / failing checks → stop, report.
+- Core-invariant test-plan items unchecked and not runnable → stop, ask for run/waive.
 - Worktree has tracked changes or unpushed commits → stop, ask.
 Each of these protects against merging the wrong thing or losing work; don't paper over them.
